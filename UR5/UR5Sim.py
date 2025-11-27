@@ -9,7 +9,7 @@ import pybullet_data
 from collections import namedtuple
 from attrdict import AttrDict
 
-ROBOT_URDF_PATH = "./ur_e_description/urdf/ur5e.urdf"
+ROBOT_URDF_PATH = "/home/atu-2/3D-Diffusion-Policy/3D-Diffusion-Policy/diffusion_policy_3d/env/ur5_bullet/UR5/ur_e_description/urdf/ur5e.urdf"
 TABLE_URDF_PATH = os.path.join(pybullet_data.getDataPath(), "table/table.urdf")
 
 class UR5Sim():
@@ -68,7 +68,50 @@ class UR5Sim():
             targetVelocities=[0]*len(poses),
             positionGains=[0.04]*len(poses), forces=forces
         )
+        # pybullet.stepSimulation()
+        # time.sleep(0.02)
 
+    def set_joint_angles_update(self, joint_angles, tol=0.01, max_steps=1000):
+        """
+        Moves the robot to the target joint_angles and steps simulation
+        until TCP reaches the corresponding FK pose within `tol`.
+        """
+
+        # indexes = [self.joints[name].id for name in self.control_joints]
+        # forces = [self.joints[name].maxForce for name in self.control_joints]
+        poses = []
+        indexes = []
+        forces = []
+
+        for i, name in enumerate(self.control_joints):
+            joint = self.joints[name]
+            poses.append(joint_angles[i])
+            indexes.append(joint.id)
+            forces.append(joint.maxForce)
+
+        for step in range(max_steps):
+            # Apply joint control
+            pybullet.setJointMotorControlArray(
+                self.ur5,
+                indexes,
+                pybullet.POSITION_CONTROL,
+                targetPositions=joint_angles,
+                targetVelocities=[0]*len(indexes),
+                positionGains=[0.04]*len(indexes),
+                forces=forces
+            )
+
+            # Step simulation
+            pybullet.stepSimulation()
+            time.sleep(0.02)  # optional, slows simulation to real-time
+
+            # Check TCP convergence
+            current_q = self.get_joint_angles()
+            max_error = max(abs(c - t) for c, t in zip(current_q, joint_angles))
+
+            if max_error < tol:
+                break
+        
 
     def get_joint_angles(self):
         j = pybullet.getJointStates(self.ur5, [1,2,3,4,5,6])
@@ -98,6 +141,34 @@ class UR5Sim():
             restPoses=rest_poses
         )
         return joint_angles
+    
+    def calculate_ik_real(self, position, orientation, restposes=None):
+        quaternion = pybullet.getQuaternionFromEuler(orientation)
+
+        # If no rest poses provided, use the robot's current joint state in PyBullet
+        if restposes is None:
+            restposes = [
+                pybullet.getJointState(self.ur5, i)[0]
+                for i in self.joint_indices     # list of actuated joint indices
+            ]
+
+        lower_limits = [-math.pi] * len(restposes)
+        upper_limits = [ math.pi] * len(restposes)
+        joint_ranges = [2 * math.pi] * len(restposes)
+
+        joint_angles = pybullet.calculateInverseKinematics(
+            self.ur5,
+            self.end_effector_index,
+            position,
+            quaternion,
+            jointDamping=[0.01] * len(restposes),
+            lowerLimits=lower_limits,
+            upperLimits=upper_limits,
+            jointRanges=joint_ranges,
+            restPoses=restposes
+        )
+    
+        return joint_angles[:len(restposes)]
        
 
     def add_gui_sliders(self):
@@ -122,7 +193,8 @@ class UR5Sim():
     def get_current_pose(self):
         linkstate = pybullet.getLinkState(self.ur5, self.end_effector_index, computeForwardKinematics=True)
         position, orientation = linkstate[0], linkstate[1]
-        return (position, orientation)
+        rpy = pybullet.getEulerFromQuaternion(orientation) 
+        return list(position) + list(rpy)
 
 def demo_simulation():
     """ Demo program showing how to use the sim """
